@@ -37,6 +37,9 @@ frontend/.env.local
 .firebase/
 firebase-debug.log
 firestore-debug.log
+*-firebase-adminsdk-*.json
+firebase-service-account.json
+service-account-key.json
 
 # React
 node_modules/

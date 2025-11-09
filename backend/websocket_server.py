@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.eeg_service import EEGService
 from backend.database import SessionLocal, Event
+from backend.firebase_service import FirebaseService
 
 class WebSocketServer:
     """WebSocket server to stream EEG data to frontend"""
@@ -250,6 +251,23 @@ class WebSocketServer:
             )
             db.add(event)
             db.commit()
+            
+            # Optionally sync to Firebase
+            try:
+                firebase_service = FirebaseService.get_instance()
+                if firebase_service.is_available():
+                    firebase_data = {
+                        "mode": self.current_mode,
+                        "focus_score": bandpowers["focus_score"],
+                        "load_score": bandpowers["load_score"],
+                        "anomaly_score": bandpowers["anomaly_score"],
+                        "context": self.current_context,
+                        "user_id": self.current_user_id,
+                        "timestamp": event.timestamp
+                    }
+                    firebase_service.insert_event(firebase_data)
+            except Exception as e:
+                print(f"Warning: Failed to sync event to Firebase: {e}")
         except Exception as e:
             print(f"Error saving event: {e}")
             db.rollback()
