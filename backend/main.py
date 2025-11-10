@@ -4,8 +4,17 @@ Starts both the FastAPI server and WebSocket server
 """
 import asyncio
 import uvicorn
+import sys
+import os
 from multiprocessing import Process
 from datetime import datetime
+
+# Add project root to path if running directly
+if __name__ == "__main__":
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from backend.api import app
 from backend.websocket_server import WebSocketServer
 from backend.firebase_service import FirebaseService

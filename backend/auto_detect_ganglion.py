@@ -4,15 +4,16 @@ Similar to OpenBCI GUI's auto-detection
 """
 import os
 import glob
-import subprocess
 import platform
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 
 def find_ble_dongle_ports():
-    """Find BLE dongle serial ports on macOS
+    """Find BLE dongle serial ports
     
     On macOS, OpenBCI devices should use /dev/cu.* ports, not /dev/tty.*
     """
+    ports = []
+    
     # Check both tty and cu ports (prefer cu for OpenBCI)
     patterns = [
         "/dev/cu.usbserial-*",  # Prefer cu ports
@@ -27,7 +28,6 @@ def find_ble_dongle_ports():
         "/dev/tty.SLAB_USBtoUART*",
     ]
     
-    ports = []
     cu_ports = []  # Prefer cu ports
     tty_ports = []
     
@@ -41,8 +41,19 @@ def find_ble_dongle_ports():
                 else:
                     tty_ports.append(port)
     
-    # Return cu ports first (preferred for OpenBCI), then tty ports
-    return cu_ports + tty_ports
+    # Windows patterns
+    if platform.system() == "Windows":
+        try:
+            import serial.tools.list_ports
+            com_ports = serial.tools.list_ports.comports()
+            for port in com_ports:
+                if 'USB' in port.description or 'Serial' in port.description:
+                    ports.append(port.device)
+        except ImportError:
+            pass  # pyserial not installed, skip Windows port detection
+    
+    # Return cu ports first, then tty ports, then Windows ports
+    return cu_ports + tty_ports + ports
 
 def try_connect_ganglion(mac_address=None, dongle_port=None):
     """Try to connect to Ganglion with given parameters"""
@@ -69,9 +80,10 @@ def auto_detect_ganglion():
     
     if not dongle_ports:
         print("No BLE dongle found. Checking USB ports...")
-        # Try all USB ports
-        all_usb = glob.glob("/dev/tty.*")
-        dongle_ports = [p for p in all_usb if 'usb' in p.lower() or 'serial' in p.lower()]
+        # Try all USB ports (macOS/Linux only)
+        if platform.system() != "Windows":
+            all_usb = glob.glob("/dev/tty.*")
+            dongle_ports = [p for p in all_usb if 'usb' in p.lower() or 'serial' in p.lower()]
     
     print(f"Found {len(dongle_ports)} potential dongle port(s):")
     for port in dongle_ports:
@@ -141,12 +153,18 @@ def main():
         print("❌ Auto-detection failed")
         print("=" * 60)
         print()
-        print("Try manually:")
-        print("  1. Find dongle port: ls /dev/tty.usb*")
-        print("  2. Find Ganglion MAC: Use OpenBCI GUI or nRF Connect app")
-        print("  3. Add to .env file:")
-        print("     GANGLION_DONGLE_PORT=/dev/tty.usbserial-XXXXX")
-        print("     GANGLION_MAC_ADDRESS=00:A0:C9:14:C8:29")
+        print("Options:")
+        print("  1. Make sure Ganglion is powered on")
+        print("  2. Make sure BLE dongle is plugged in")
+        print("  3. Try manually:")
+        if platform.system() != "Windows":
+            print("     - Find dongle port: ls /dev/tty.usb*")
+        else:
+            print("     - Check Device Manager for COM ports")
+        print("     - Find Ganglion MAC: Use OpenBCI GUI or nRF Connect app")
+        print("     - Add to .env file:")
+        print("       GANGLION_DONGLE_PORT=/dev/tty.usbserial-XXXXX")
+        print("       GANGLION_MAC_ADDRESS=00:A0:C9:14:C8:29")
         print()
 
 if __name__ == "__main__":

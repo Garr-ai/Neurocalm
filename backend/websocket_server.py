@@ -7,7 +7,7 @@ import json
 import sys
 import os
 from typing import Set
-from datetime import datetime
+from datetime import datetime, timezone
 from brainflow.board_shim import BoardIds
 
 # Add parent directory to path for imports
@@ -35,7 +35,20 @@ class WebSocketServer:
     async def register_client(self, websocket):
         """Register a new client"""
         self.connected_clients.add(websocket)
-        print(f"Client connected. Total clients: {len(self.connected_clients)}")
+        print(f"[CLIENT] Client connected. Total clients: {len(self.connected_clients)}")
+        print(f"[CLIENT] WebSocket object: {websocket}, Remote: {getattr(websocket, 'remote_address', 'N/A')}")
+        
+        # Send current state to new client
+        try:
+            await websocket.send(json.dumps({
+                "type": "state_sync",
+                "is_recording": self.eeg_service.is_streaming,
+                "mode": self.current_mode
+            }))
+            print(f"[CLIENT] State sync message sent successfully")
+        except Exception as e:
+            print(f"[CLIENT] Error sending state sync: {e}")
+            self.connected_clients.discard(websocket)
     
     async def unregister_client(self, websocket):
         """Unregister a client"""
@@ -44,24 +57,45 @@ class WebSocketServer:
     
     async def broadcast(self, message: dict):
         """Broadcast message to all connected clients"""
-        if self.connected_clients:
-            message_str = json.dumps(message)
-            disconnected = set()
-            for client in self.connected_clients:
-                try:
-                    await client.send(message_str)
-                except websockets.exceptions.ConnectionClosed:
-                    disconnected.add(client)
-            
-            # Remove disconnected clients
-            for client in disconnected:
-                self.connected_clients.discard(client)
+        if not self.connected_clients:
+            print(f"[BROADCAST] WARNING: No connected clients to broadcast to!")
+            return
+        
+        message_str = json.dumps(message)
+        disconnected = set()
+        sent_count = 0
+        
+        for client in self.connected_clients.copy():  # Use copy to avoid modification during iteration
+            try:
+                await client.send(message_str)
+                sent_count += 1
+            except websockets.exceptions.ConnectionClosed:
+                print(f"[BROADCAST] Client disconnected")
+                disconnected.add(client)
+            except Exception as e:
+                print(f"[BROADCAST] Error sending to client: {e}")
+                disconnected.add(client)
+        
+        # Remove disconnected clients
+        for client in disconnected:
+            self.connected_clients.discard(client)
+        
+        if sent_count > 0:
+            print(f"[BROADCAST] ✅ Successfully sent to {sent_count}/{len(self.connected_clients)} client(s)")
+        else:
+            print(f"[BROADCAST] ❌ WARNING: Failed to send to any clients! ({len(self.connected_clients)} clients registered)")
+            # Try to diagnose the issue
+            for i, client in enumerate(self.connected_clients):
+                print(f"[BROADCAST] Client #{i}: {client}, State: {getattr(client, 'state', 'N/A')}")
     
     async def handle_message(self, websocket, message: str):
         """Handle incoming messages from clients"""
         try:
+            print(f"[WS] Raw message received: {message[:200]}...")  # First 200 chars
             data = json.loads(message)
+            print(f"[WS] Parsed message: {data}")
             msg_type = data.get("type")
+            print(f"[WS] Message type: {msg_type}")
             
             if msg_type == "set_mode":
                 self.current_mode = data.get("mode", "background")
@@ -74,9 +108,14 @@ class WebSocketServer:
                 self.current_user_id = data.get("user_id", "default")
             
             elif msg_type == "start_recording":
+                print(f"[WS] start_recording received! is_streaming={self.eeg_service.is_streaming}")
                 # Start EEG streaming if not already started
                 if not self.eeg_service.is_streaming:
-                    print("Starting EEG recording...")
+                    print("[WS] Starting EEG recording...")
+                    await websocket.send(json.dumps({
+                        "type": "info",
+                        "message": "Received start_recording command, initializing..."
+                    }))
                     try:
                         # Get connection parameters from message or environment
                         serial_port = data.get("serial_port") or os.getenv("GANGLION_SERIAL_PORT")
@@ -93,46 +132,11 @@ class WebSocketServer:
                                 "message": "Attempting to auto-detect Ganglion..."
                             }))
                             
-                            # Try auto-detection: scan for dongle ports and try connecting
-                            import glob
-                            dongle_ports = []
-                            # Check both cu and tty ports (prefer cu for OpenBCI on macOS)
-                            patterns = [
-                                "/dev/cu.usbserial*",  # Prefer cu ports (no dash - matches usbserial-XXX and usbserialXXX)
-                                "/dev/cu.usbmodem*",   # Matches usbmodem11, usbmodem-XXX, etc.
-                                "/dev/cu.USB-Serial*",
-                                "/dev/cu.*",  # Catch-all for cu ports (will filter out non-BLE)
-                                "/dev/tty.usbserial*",  # Fallback to tty
-                                "/dev/tty.usbmodem*",
-                                "/dev/tty.USB-Serial*",
-                            ]
-                            cu_ports = []
-                            tty_ports = []
-                            for pattern in patterns:
-                                try:
-                                    found = glob.glob(pattern)
-                                    print(f"  Checking pattern {pattern}: found {len(found)} ports")
-                                    for port in found:
-                                        # Skip common non-BLE ports
-                                        skip = False
-                                        skip_terms = ['Bluetooth', 'debug', 'Bluetooth-Incoming']
-                                        for term in skip_terms:
-                                            if term.lower() in port.lower():
-                                                skip = True
-                                                break
-                                        
-                                        if not skip:
-                                            if '/dev/cu.' in port:
-                                                if port not in cu_ports:
-                                                    cu_ports.append(port)
-                                            elif '/dev/tty.' in port:
-                                                if port not in tty_ports:
-                                                    tty_ports.append(port)
-                                except Exception as e:
-                                    print(f"  Error checking pattern {pattern}: {e}")
+                            # Import auto-detection utilities
+                            from backend.auto_detect_ganglion import find_ble_dongle_ports
                             
-                            # Prefer cu ports (recommended for OpenBCI on macOS)
-                            dongle_ports = cu_ports + tty_ports
+                            # Try auto-detection: scan for dongle ports
+                            dongle_ports = find_ble_dongle_ports()
                             print(f"Auto-detection: Found {len(dongle_ports)} potential dongle port(s): {dongle_ports}")
                             
                             if dongle_ports:
@@ -142,17 +146,21 @@ class WebSocketServer:
                                     try:
                                         print(f"Trying auto-detect with dongle port: {dongle_port}")
                                         self.eeg_service.connect(dongle_port=dongle_port)
-                                        print(f"✅ Auto-detection successful with {dongle_port}!")
+                                        print(f"[OK] Auto-detection successful with {dongle_port}!")
                                         break
                                     except Exception as e:
+                                        import traceback
+                                        error_details = traceback.format_exc()
                                         print(f"Failed with {dongle_port}: {e}")
+                                        print(f"Traceback: {error_details}")
                                         continue
                                 else:
                                     # All dongle ports failed
                                     error_msg = (
-                                        "Auto-detection failed. Please provide connection details:\n"
+                                        "Auto-detection failed. Options:\n"
                                         "1. For BLE dongle: Set GANGLION_DONGLE_PORT in .env\n"
-                                        "2. Run 'python -m backend.auto_detect_ganglion' to find your dongle port"
+                                        "2. Run 'python -m backend.auto_detect_ganglion' to find your dongle port\n"
+                                        "3. Make sure Ganglion is powered on and in range"
                                     )
                                     print(f"ERROR: {error_msg}")
                                     await websocket.send(json.dumps({
@@ -161,11 +169,12 @@ class WebSocketServer:
                                     }))
                                     return
                             else:
+                                # No dongle found
                                 error_msg = (
-                                    "No BLE dongle found. Please:\n"
+                                    "No BLE dongle found. Options:\n"
                                     "1. Plug in your BLE dongle\n"
-                                    "2. Set GANGLION_DONGLE_PORT in .env\n"
-                                    "3. Or run 'python -m backend.auto_detect_ganglion'"
+                                    "2. Set GANGLION_DONGLE_PORT in .env file\n"
+                                    "3. Run 'python -m backend.auto_detect_ganglion' to find your dongle port"
                                 )
                                 print(f"ERROR: {error_msg}")
                                 await websocket.send(json.dumps({
@@ -197,17 +206,33 @@ class WebSocketServer:
                         
                         print("Starting EEG stream...")
                         self.eeg_service.start_streaming(self.on_eeg_data)
+                        
+                        # Give the board a moment to start collecting data
+                        print("[DEBUG] Waiting 2 seconds for board to accumulate initial data...")
+                        await asyncio.sleep(2)
+                        
                         # Start the stream loop as a background task
                         self.stream_task = asyncio.create_task(self.eeg_service.stream_loop())
                         print("EEG recording started successfully!")
+                        print(f"[DEBUG] Stream task created: {self.stream_task}, is_streaming={self.eeg_service.is_streaming}")
+                        print(f"[DEBUG] Board ID: {self.eeg_service.board_id}, Board: {self.eeg_service.board}")
+                        
+                        await websocket.send(json.dumps({
+                            "type": "recording_started",
+                            "message": "Recording started successfully"
+                        }))
                         await self.broadcast({"type": "recording_started"})
                     except Exception as e:
-                        error_msg = f"Failed to start EEG: {str(e)}\n\nMake sure:\n1. Ganglion is powered on\n2. Ganglion is paired (System Settings → Bluetooth)\n3. Connection details are set in .env file\n\nRun 'python find_ganglion.py' to find your MAC address."
+                        import traceback
+                        error_details = traceback.format_exc()
+                        error_msg = f"Failed to start EEG recording: {str(e)}\n\nMake sure:\n1. Ganglion is powered on\n2. Ganglion is paired (System Settings → Bluetooth)\n3. Connection details are set in .env file\n\nRun 'python -m backend.auto_detect_ganglion' to find your dongle port."
                         print(f"ERROR: {error_msg}")
                         print(f"Exception details: {type(e).__name__}: {e}")
+                        print(f"Full traceback:\n{error_details}")
                         await websocket.send(json.dumps({
                             "type": "error",
-                            "message": error_msg
+                            "message": error_msg,
+                            "details": str(e)
                         }))
                 else:
                     print("EEG already streaming, ignoring start_recording request")
@@ -230,10 +255,17 @@ class WebSocketServer:
                     self.eeg_service.disconnect()
                     await self.broadcast({"type": "recording_stopped"})
         
-        except json.JSONDecodeError:
-            await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON"}))
+        except json.JSONDecodeError as e:
+            error_msg = f"Invalid JSON: {str(e)}"
+            print(f"[WS] JSON decode error: {error_msg}")
+            print(f"[WS] Message was: {message[:200]}")
+            await websocket.send(json.dumps({"type": "error", "message": error_msg}))
         except Exception as e:
-            await websocket.send(json.dumps({"type": "error", "message": str(e)}))
+            import traceback
+            error_msg = f"Error handling message: {str(e)}"
+            print(f"[WS] Exception in handle_message: {error_msg}")
+            print(f"[WS] Traceback:\n{traceback.format_exc()}")
+            await websocket.send(json.dumps({"type": "error", "message": error_msg}))
     
     async def on_eeg_data(self, bandpowers: dict):
         """Callback when new EEG data is available"""
@@ -241,7 +273,7 @@ class WebSocketServer:
         db = SessionLocal()
         try:
             event = Event(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 mode=self.current_mode,
                 focus_score=bandpowers["focus_score"],
                 load_score=bandpowers["load_score"],
@@ -275,12 +307,20 @@ class WebSocketServer:
             db.close()
         
         # Broadcast to clients
-        await self.broadcast({
-            "type": "eeg_data",
-            "data": bandpowers,
-            "mode": self.current_mode,
-            "timestamp": datetime.utcnow().isoformat()
-        })
+        try:
+            message = {
+                "type": "eeg_data",
+                "data": bandpowers,
+                "mode": self.current_mode,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            print(f"[DEBUG] Broadcasting EEG data: {len(self.connected_clients)} client(s) connected")
+            print(f"[DEBUG] Data: focus={bandpowers.get('focus_score', 'N/A'):.2f}, load={bandpowers.get('load_score', 'N/A'):.2f}, anomaly={bandpowers.get('anomaly_score', 'N/A'):.2f}")
+            await self.broadcast(message)
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] Failed to broadcast EEG data: {e}")
+            print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
     
     async def handle_client(self, websocket):
         """Handle a client connection"""
