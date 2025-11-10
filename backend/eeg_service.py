@@ -10,11 +10,12 @@ from typing import Optional, Callable
 class EEGService:
     """Service to handle EEG data collection from OpenBCI"""
     
-    def __init__(self, board_id: int = BoardIds.GANGLION_BOARD):
+    def __init__(self, board_id: int = BoardIds.SYNTHETIC_BOARD):
         """
         Initialize EEG service
         For OpenBCI Ganglion, use BoardIds.GANGLION_BOARD
         For OpenBCI Cyton, use BoardIds.CYTON_BOARD
+        For testing/simulation, use BoardIds.SYNTHETIC_BOARD
         """
         self.board_id = board_id
         self.board = None
@@ -58,15 +59,61 @@ class EEGService:
         if not self.board:
             raise RuntimeError("Board not connected. Call connect() first.")
         
+        if self.is_streaming:
+            print("[WARNING] Board is already streaming, stopping first...")
+            self.stop_streaming()
+        
         self.data_callback = callback
-        self.board.start_stream()
-        self.is_streaming = True
+        try:
+            self.board.start_stream()
+            self.is_streaming = True
+        except Exception as e:
+            print(f"[ERROR] Failed to start stream: {e}")
+            self.is_streaming = False
+            raise
     
     def stop_streaming(self):
         """Stop streaming EEG data"""
         if self.board and self.is_streaming:
             self.board.stop_stream()
             self.is_streaming = False
+    
+    def get_raw_channels(self) -> Optional[dict]:
+        """
+        Get raw channel data from all EEG channels
+        Returns: { channel_1, channel_2, channel_3, channel_4 } in microvolts
+        """
+        if not self.board or not self.is_streaming:
+            return None
+        
+        try:
+            board_data = self.board.get_board_data()
+        except Exception as e:
+            print(f"[RAW] Error getting board data: {e}")
+            return None
+        
+        if board_data is None or len(board_data.shape) < 2:
+            return None
+        
+        num_samples = board_data.shape[1]
+        if num_samples == 0:
+            return None
+        
+        # Get EEG channels
+        eeg_channels = BoardShim.get_eeg_channels(self.board_id)
+        if len(eeg_channels) == 0:
+            return None
+        
+        # Get the last sample from each channel (most recent value)
+        channel_values = {}
+        for i in range(min(4, len(eeg_channels))):
+            channel_idx = eeg_channels[i]
+            if channel_idx < board_data.shape[0]:
+                # Get last sample value in microvolts
+                value = float(board_data[channel_idx, -1])
+                channel_values[f"channel_{i+1}"] = value
+        
+        return channel_values if channel_values else None
     
     def get_bandpowers(self, window_seconds: int = 1) -> dict:
         """
@@ -235,39 +282,41 @@ class EEGService:
         data_sent_count = 0
         print(f"[STREAM] Starting stream loop (board_id={self.board_id}, is_streaming={self.is_streaming})")
         
-        # Brief initial wait for board to start collecting data (reduced from 2s to 0.3s)
+        # Brief initial wait for board to start collecting data
         await asyncio.sleep(0.3)
         
         while self.is_streaming:
             try:
                 loop_count += 1
-                bandpowers = self.get_bandpowers()
                 
-                if bandpowers and self.data_callback:
+                # Get raw channel data (all 4 channels)
+                raw_channels = self.get_raw_channels()
+                
+                if raw_channels and self.data_callback:
                     consecutive_none_count = 0
                     data_sent_count += 1
                     # Only log first few and then every 20th to reduce spam
                     if data_sent_count <= 3 or data_sent_count % 20 == 0:
-                        print(f"[STREAM] Sending data #{data_sent_count}")
-                    await self.data_callback(bandpowers)
+                        print(f"[STREAM] Sending raw channel data #{data_sent_count}")
+                    await self.data_callback(raw_channels)
                 else:
                     consecutive_none_count += 1
                     # Only log waiting message on first attempt
                     if consecutive_none_count == 1:
-                        print(f"[STREAM] Waiting for enough EEG data... (need 50 samples)")
+                        print(f"[STREAM] Waiting for EEG data...")
                     elif consecutive_none_count == 10:
                         # Check what's happening after a few attempts
                         if self.board:
                             try:
                                 data = self.board.get_board_data()
                                 num_samples = data.shape[1] if len(data.shape) > 1 else 0
-                                print(f"[STREAM] Board data: {num_samples} samples (need 50)")
+                                print(f"[STREAM] Board data: {num_samples} samples")
                             except Exception as e:
                                 print(f"[STREAM] Error checking board data: {e}")
                         consecutive_none_count = 0  # Reset to avoid spam
                 
-                # Update every 0.5 seconds for faster response (reduced from 1 second)
-                await asyncio.sleep(0.5)
+                # Update every 0.1 seconds for real-time display (10 updates per second)
+                await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"[STREAM] Error in stream loop #{loop_count}: {e}")
                 import traceback
@@ -275,4 +324,3 @@ class EEGService:
                 await asyncio.sleep(0.5)
         
         print(f"[STREAM] Stream loop ended (is_streaming={self.is_streaming})")
-

@@ -10,7 +10,8 @@ const Dashboard = ({ currentUser }) => {
   const [scores, setScores] = useState({
     focus: 0,
     load: 0,
-    anomaly: 0
+    anomaly: 0,
+    channel4: 0
   });
   const [status, setStatus] = useState('Disconnected');
   const [error, setError] = useState(null);
@@ -34,32 +35,30 @@ const Dashboard = ({ currentUser }) => {
         console.log('=== MESSAGE RECEIVED ===', message.type, message);
         
         if (message.type === 'eeg_data') {
-          console.log('✅ EEG DATA RECEIVED!', message.data);
-          
-          // Validate data structure
-          if (!message.data || typeof message.data.focus_score === 'undefined') {
+          // Handle raw channel data (channel_1, channel_2, channel_3, channel_4)
+          if (!message.data || !message.data.channel_1) {
             console.error('Invalid EEG data structure:', message);
             return;
           }
           
           const newData = {
             time: new Date(message.timestamp).toLocaleTimeString(),
-            focus: message.data.focus_score,
-            load: message.data.load_score,
-            anomaly: message.data.anomaly_score
+            channel1: message.data.channel_1 || 0,
+            channel2: message.data.channel_2 || 0,
+            channel3: message.data.channel_3 || 0,
+            channel4: message.data.channel_4 || 0
           };
           
-          console.log('Updating scores and chart data:', newData);
-          
+          // Update scores to show channel values
           setScores({
-            focus: message.data.focus_score,
-            load: message.data.load_score,
-            anomaly: message.data.anomaly_score
+            focus: newData.channel1,
+            load: newData.channel2,
+            anomaly: newData.channel3,
+            channel4: newData.channel4
           });
           
           setEegData(prev => {
             const updated = [...prev.slice(-59), newData]; // Keep last 60 points
-            console.log('EEG data array length:', updated.length);
             return updated;
           });
         } else if (message.type === 'recording_started') {
@@ -112,12 +111,7 @@ const Dashboard = ({ currentUser }) => {
     };
   }, []);
 
-  const startRecording = () => {
-    console.log('=== START RECORDING CLICKED ===');
-    console.log('WebSocket object:', ws);
-    console.log('WebSocket readyState:', ws?.readyState);
-    console.log('WebSocket OPEN constant:', WebSocket.OPEN);
-    
+  const toggleStreaming = () => {
     if (!ws) {
       const errorMsg = 'WebSocket is null. Please refresh the page.';
       console.error(errorMsg);
@@ -140,26 +134,17 @@ const Dashboard = ({ currentUser }) => {
       return;
     }
     
-    console.log('WebSocket is OPEN, sending start_recording message...');
-    try {
-      const message = { type: 'start_recording' };
-      console.log('Sending message:', message);
-      ws.send(JSON.stringify(message));
-      setStatus('Connecting to Ganglion...');
-      setError(null);
-      console.log('✅ start_recording message sent successfully');
-    } catch (error) {
-      console.error('❌ Error sending start_recording message:', error);
-      setError(`Failed to send start recording command: ${error.message}`);
-      setStatus('Error');
-    }
-  };
-
-  const stopRecording = () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      console.log('Sending stop_recording message...');
+    if (isRecording) {
+      // Stop streaming
+      console.log('Stopping stream...');
       ws.send(JSON.stringify({ type: 'stop_recording' }));
       setStatus('Stopping...');
+    } else {
+      // Start streaming
+      console.log('Starting stream...');
+      ws.send(JSON.stringify({ type: 'start_recording' }));
+      setStatus('Starting...');
+      setError(null);
     }
   };
 
@@ -188,13 +173,13 @@ const Dashboard = ({ currentUser }) => {
             </span>
             {error && <span className="error-message">{error}</span>}
           </div>
-          <button 
-            className={`button ${isRecording ? 'button-danger' : ''}`}
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={!ws || ws.readyState !== WebSocket.OPEN}
-          >
-            {isRecording ? 'Stop Recording' : 'Start Recording'}
-          </button>
+        <button 
+          className={`button ${isRecording ? 'button-danger' : ''}`}
+          onClick={toggleStreaming}
+          disabled={!ws || ws.readyState !== WebSocket.OPEN}
+        >
+          {isRecording ? 'Stop' : 'Start'}
+        </button>
         </div>
       </div>
 
@@ -212,16 +197,20 @@ const Dashboard = ({ currentUser }) => {
 
       <div className="scores-grid">
         <div className="score-card">
-          <div className="score-label">Focus Score</div>
-          <div className="score-value">{scores.focus.toFixed(1)}</div>
+          <div className="score-label">Channel 1 (µV)</div>
+          <div className="score-value">{scores.focus.toFixed(2)}</div>
         </div>
         <div className="score-card">
-          <div className="score-label">Load Score</div>
-          <div className="score-value">{scores.load.toFixed(1)}</div>
+          <div className="score-label">Channel 2 (µV)</div>
+          <div className="score-value">{scores.load.toFixed(2)}</div>
         </div>
         <div className="score-card">
-          <div className="score-label">Anomaly Score</div>
-          <div className="score-value">{scores.anomaly.toFixed(1)}</div>
+          <div className="score-label">Channel 3 (µV)</div>
+          <div className="score-value">{scores.anomaly.toFixed(2)}</div>
+        </div>
+        <div className="score-card">
+          <div className="score-label">Channel 4 (µV)</div>
+          <div className="score-value">{scores.channel4 ? scores.channel4.toFixed(2) : '0.00'}</div>
         </div>
       </div>
 
@@ -229,7 +218,7 @@ const Dashboard = ({ currentUser }) => {
         <h3 className="card-title">Real-time EEG Data</h3>
         {eegData.length === 0 ? (
           <div style={{ padding: '20px', textAlign: 'center', color: '#999' }}>
-            Waiting for EEG data... {isRecording ? '(Recording in progress)' : '(Click Start Recording)'}
+            Waiting for EEG data... {isRecording ? '(Streaming in progress)' : '(Click Start to begin)'}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={400}>
@@ -241,39 +230,48 @@ const Dashboard = ({ currentUser }) => {
                 interval="preserveStartEnd"
               />
               <YAxis 
-                domain={[0, 'auto']}
+                domain={['auto', 'auto']}
                 tick={{ fontSize: 12 }}
-                label={{ value: 'Score', angle: -90, position: 'insideLeft' }}
+                label={{ value: 'Voltage (µV)', angle: -90, position: 'insideLeft' }}
                 allowDataOverflow={false}
               />
               <Tooltip 
-                formatter={(value) => value.toFixed(2)}
+                formatter={(value) => `${parseFloat(value).toFixed(2)} µV`}
                 labelStyle={{ color: '#333' }}
               />
               <Legend />
               <Line 
                 type="monotone" 
-                dataKey="focus" 
+                dataKey="channel1" 
                 stroke="#667eea" 
-                name="Focus" 
+                name="Channel 1" 
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
               />
               <Line 
                 type="monotone" 
-                dataKey="load" 
+                dataKey="channel2" 
                 stroke="#f093fb" 
-                name="Load" 
+                name="Channel 2" 
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
               />
               <Line 
                 type="monotone" 
-                dataKey="anomaly" 
+                dataKey="channel3" 
                 stroke="#4facfe" 
-                name="Anomaly" 
+                name="Channel 3" 
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4 }}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="channel4" 
+                stroke="#43e97b" 
+                name="Channel 4" 
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
