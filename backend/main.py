@@ -40,7 +40,6 @@ def run_frontend():
     """Run frontend development server"""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     frontend_dir = os.path.join(project_root, "frontend")
-    
     # Check if node_modules exists (dependencies installed)
     node_modules = os.path.join(frontend_dir, "node_modules")
     if not os.path.exists(node_modules):
