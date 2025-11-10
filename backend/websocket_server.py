@@ -9,12 +9,13 @@ import os
 from typing import Set
 from datetime import datetime, timezone
 from brainflow.board_shim import BoardIds, BoardShim
+from brainflow.board_shim import BrainFlowInputParams
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.eeg_service import EEGService
-from brainflow.board_shim import BrainFlowInputParams
+
 
 class WebSocketServer:
     """WebSocket server to stream EEG data to frontend"""
@@ -26,7 +27,6 @@ class WebSocketServer:
         board_id = int(os.getenv("BOARD_ID", BoardIds.SYNTHETIC_BOARD))
         self.eeg_service = EEGService(board_id=board_id)
         self.connected_clients: Set = set()
-        self.current_mode = "background"
         self.current_context = {}
         self.current_user_id = "default"
         self.stream_task = None
@@ -42,7 +42,6 @@ class WebSocketServer:
             await websocket.send(json.dumps({
                 "type": "state_sync",
                 "is_recording": self.eeg_service.is_streaming,
-                "mode": self.current_mode
             }))
             print(f"[CLIENT] State sync message sent successfully")
         except Exception as e:
@@ -57,7 +56,6 @@ class WebSocketServer:
     async def broadcast(self, message: dict):
         """Broadcast message to all connected clients"""
         if not self.connected_clients:
-            print(f"[BROADCAST] WARNING: No connected clients to broadcast to!")
             return
         
         message_str = json.dumps(message)
@@ -69,7 +67,6 @@ class WebSocketServer:
                 await client.send(message_str)
                 sent_count += 1
             except websockets.exceptions.ConnectionClosed:
-                print(f"[BROADCAST] Client disconnected")
                 disconnected.add(client)
             except Exception as e:
                 print(f"[BROADCAST] Error sending to client: {e}")
@@ -78,27 +75,39 @@ class WebSocketServer:
         # Remove disconnected clients
         for client in disconnected:
             self.connected_clients.discard(client)
-        
-        if sent_count > 0:
-            print(f"[BROADCAST] ✅ Successfully sent to {sent_count}/{len(self.connected_clients)} client(s)")
-        else:
-            print(f"[BROADCAST] ❌ WARNING: Failed to send to any clients! ({len(self.connected_clients)} clients registered)")
-            # Try to diagnose the issue
-            for i, client in enumerate(self.connected_clients):
-                print(f"[BROADCAST] Client #{i}: {client}, State: {getattr(client, 'state', 'N/A')}")
     
     async def handle_message(self, websocket, message: str):
         """Handle incoming messages from clients"""
         try:
-            print(f"[WS] Raw message received: {message[:200]}...")  # First 200 chars
             data = json.loads(message)
-            print(f"[WS] Parsed message: {data}")
             msg_type = data.get("type")
-            print(f"[WS] Message type: {msg_type}")
             
-            if msg_type == "set_mode":
-                self.current_mode = data.get("mode", "background")
-                await self.broadcast({"type": "mode_changed", "mode": self.current_mode})
+            if msg_type == "set_mental_state":
+                # Set mental state mode for data generation (calm/stressed/normal)
+                mode = data.get("mode", "normal")
+                print(f"[WS] Setting mental state mode to: {mode}")
+                
+                if mode in ["calm", "stressed", "normal"]:
+                    # Set the mode
+                    self.eeg_service.set_mental_state_mode(mode)
+                    
+                    # Send confirmation
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": "mental_state_changed",
+                            "mode": mode
+                        }))
+                    except Exception:
+                        pass  # Connection might be closed, ignore
+                else:
+                    # Invalid mode
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": "error",
+                            "message": f"Invalid mental state mode: {mode}"
+                        }))
+                    except Exception:
+                        pass
             
             elif msg_type == "set_context":
                 self.current_context = data.get("context", {})
@@ -107,297 +116,119 @@ class WebSocketServer:
                 self.current_user_id = data.get("user_id", "default")
             
             elif msg_type == "start_recording":
-                print(f"[WS] start_recording received! is_streaming={self.eeg_service.is_streaming}")
-                # Start EEG streaming if not already started
                 if not self.eeg_service.is_streaming:
-                    print("[WS] Starting EEG recording...")
                     try:
                         await websocket.send(json.dumps({
                             "type": "info",
-                            "message": "Received start_recording command, initializing..."
+                            "message": "Starting..."
                         }))
-                    except Exception as send_error:
-                        print(f"[ERROR] Failed to send info message: {send_error}")
-                        # Continue anyway - don't let send errors stop the initialization
+                    except Exception:
+                        pass
+                    
                     try:
                         # For synthetic board, no connection needed - just start streaming
                         if self.eeg_service.board_id == BoardIds.SYNTHETIC_BOARD:
-                            try:
-                                # Synthetic board - no connection needed, just start
-                                # Check if board is already initialized (from previous start/stop cycle)
-                                if not self.eeg_service.board:
-                                    # Initialize synthetic board
-                                    print("[SYNTHETIC] Initializing synthetic board...")
-                                    try:
-                                        params = BrainFlowInputParams()
-                                        self.eeg_service.board = BoardShim(self.eeg_service.board_id, params)
-                                        self.eeg_service.board.prepare_session()
-                                        print("[SYNTHETIC] Board prepared successfully")
-                                    except Exception as init_error:
-                                        print(f"[SYNTHETIC] Error initializing board: {init_error}")
-                                        # Try to cleanup and retry
-                                        try:
-                                            if self.eeg_service.board:
-                                                self.eeg_service.board.release_session()
-                                        except:
-                                            pass
-                                        self.eeg_service.board = None
-                                        # Retry once
-                                        try:
-                                            params = BrainFlowInputParams()
-                                            self.eeg_service.board = BoardShim(self.eeg_service.board_id, params)
-                                            self.eeg_service.board.prepare_session()
-                                            print("[SYNTHETIC] Board prepared successfully (after retry)")
-                                        except Exception as retry_error:
-                                            print(f"[SYNTHETIC] Retry also failed: {retry_error}")
-                                            raise Exception(f"Failed to initialize board: {retry_error}") from retry_error
-                                else:
-                                    print("[SYNTHETIC] Board already initialized, reusing existing session")
-                                
-                                # Check if already streaming (shouldn't happen due to check above, but double-check)
-                                if self.eeg_service.is_streaming:
-                                    print("[SYNTHETIC] Board is already streaming")
+                            if not self.eeg_service.board:
+                                print("[SYNTHETIC] Initializing synthetic board...")
+                                params = BrainFlowInputParams()
+                                self.eeg_service.board = BoardShim(self.eeg_service.board_id, params)
+                                self.eeg_service.board.prepare_session()
+                                print("[SYNTHETIC] Board prepared successfully")
+                            
+                            if self.eeg_service.is_streaming:
+                                try:
                                     await websocket.send(json.dumps({
                                         "type": "info",
                                         "message": "Streaming already in progress"
                                     }))
-                                    return
-                                
-                                print("[SYNTHETIC] Starting streaming...")
-                                try:
-                                    self.eeg_service.start_streaming(self.on_eeg_data)
-                                    print("[SYNTHETIC] Stream started successfully")
-                                except Exception as stream_start_error:
-                                    error_msg = f"Failed to start stream: {str(stream_start_error)}"
-                                    print(f"[ERROR] {error_msg}")
-                                    raise Exception(error_msg) from stream_start_error
-                                
-                                print("[SYNTHETIC] Starting stream loop...")
-                                
-                                # Cancel existing stream task if any
-                                if self.stream_task and not self.stream_task.done():
-                                    print("[SYNTHETIC] Cancelling existing stream task")
-                                    try:
-                                        self.stream_task.cancel()
-                                        await asyncio.wait_for(self.stream_task, timeout=1.0)
-                                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                                        pass
-                                    except Exception as cancel_error:
-                                        print(f"[WARNING] Error cancelling stream task: {cancel_error}")
-                                
-                                # Create new stream task
-                                try:
-                                    self.stream_task = asyncio.create_task(self.eeg_service.stream_loop())
-                                    print("[SYNTHETIC] Stream loop task created")
-                                except Exception as task_error:
-                                    error_msg = f"Failed to create stream task: {str(task_error)}"
-                                    print(f"[ERROR] {error_msg}")
-                                    # Stop streaming if task creation failed
-                                    try:
-                                        self.eeg_service.stop_streaming()
-                                    except:
-                                        pass
-                                    raise Exception(error_msg) from task_error
-                                
-                                # Send success message to the client that initiated the start
-                                try:
-                                    await websocket.send(json.dumps({
-                                        "type": "recording_started",
-                                        "message": "Synthetic board streaming started successfully"
-                                    }))
-                                except Exception as send_error:
-                                    print(f"[ERROR] Failed to send recording_started message: {send_error}")
-                                
-                                # Broadcast to all clients (don't let errors here stop the stream)
-                                try:
-                                    await self.broadcast({"type": "recording_started"})
-                                except Exception as broadcast_error:
-                                    print(f"[ERROR] Failed to broadcast recording_started: {broadcast_error}")
-                                
-                                print("[OK] Started streaming with synthetic board")
+                                except Exception:
+                                    pass
                                 return
-                            except Exception as synth_error:
-                                import traceback
-                                error_details = traceback.format_exc()
-                                error_msg = f"Failed to start synthetic board: {str(synth_error)}"
-                                print(f"[ERROR] {error_msg}")
-                                print(f"[ERROR] Traceback:\n{error_details}")
+                            
+                            print("[SYNTHETIC] Starting streaming...")
+                            self.eeg_service.start_streaming(self.on_eeg_data)
+                            
+                            # Cancel existing stream task if any
+                            if self.stream_task and not self.stream_task.done():
                                 try:
-                                    await websocket.send(json.dumps({
-                                        "type": "error",
-                                        "message": error_msg,
-                                        "details": str(synth_error)
-                                    }))
-                                except Exception as send_error:
-                                    print(f"[ERROR] Failed to send error message: {send_error}")
-                                return
-                        
-                        # Get connection parameters from message or environment (for real hardware)
-                        serial_port = data.get("serial_port") or os.getenv("GANGLION_SERIAL_PORT")
-                        mac_address = data.get("mac_address") or os.getenv("GANGLION_MAC_ADDRESS")
-                        dongle_port = data.get("dongle_port") or os.getenv("GANGLION_DONGLE_PORT")
-                        
-                        print(f"Connection parameters - MAC: {mac_address}, Serial: {serial_port}, Dongle: {dongle_port}")
-                        
-                        # Try auto-detection if no parameters provided
-                        if not mac_address and not serial_port and not dongle_port:
-                            print("No connection parameters provided. Attempting auto-detection...")
-                            await websocket.send(json.dumps({
-                                "type": "info",
-                                "message": "Attempting to auto-detect Ganglion..."
-                            }))
+                                    self.stream_task.cancel()
+                                    await asyncio.wait_for(self.stream_task, timeout=1.0)
+                                except (asyncio.CancelledError, asyncio.TimeoutError):
+                                    pass
                             
-                            # Import auto-detection utilities
-                            from backend.auto_detect_ganglion import find_ble_dongle_ports
+                            self.stream_task = asyncio.create_task(self.eeg_service.stream_loop())
                             
-                            # Try auto-detection: scan for dongle ports
-                            dongle_ports = find_ble_dongle_ports()
-                            print(f"Auto-detection: Found {len(dongle_ports)} potential dongle port(s): {dongle_ports}")
-                            
-                            if dongle_ports:
-                                print(f"Found {len(dongle_ports)} potential dongle port(s), trying auto-detection...")
-                                # Try connecting with just dongle port (let BrainFlow scan for MAC)
-                                for dongle_port in dongle_ports:
-                                    try:
-                                        print(f"Trying auto-detect with dongle port: {dongle_port}")
-                                        self.eeg_service.connect(dongle_port=dongle_port)
-                                        print(f"[OK] Auto-detection successful with {dongle_port}!")
-                                        break
-                                    except Exception as e:
-                                        import traceback
-                                        error_details = traceback.format_exc()
-                                        print(f"Failed with {dongle_port}: {e}")
-                                        print(f"Traceback: {error_details}")
-                                        continue
-                                else:
-                                    # All dongle ports failed
-                                    error_msg = (
-                                        "Auto-detection failed. Options:\n"
-                                        "1. For BLE dongle: Set GANGLION_DONGLE_PORT in .env\n"
-                                        "2. Run 'python -m backend.auto_detect_ganglion' to find your dongle port\n"
-                                        "3. Make sure Ganglion is powered on and in range"
-                                    )
-                                    print(f"ERROR: {error_msg}")
-                                    await websocket.send(json.dumps({
-                                        "type": "error",
-                                        "message": error_msg
-                                    }))
-                                    return
-                            else:
-                                # No dongle found
-                                error_msg = (
-                                    "No BLE dongle found. Options:\n"
-                                    "1. Plug in your BLE dongle\n"
-                                    "2. Set GANGLION_DONGLE_PORT in .env file\n"
-                                    "3. Run 'python -m backend.auto_detect_ganglion' to find your dongle port"
-                                )
-                                print(f"ERROR: {error_msg}")
+                            # Send success message
+                            try:
                                 await websocket.send(json.dumps({
-                                    "type": "error",
-                                    "message": error_msg
+                                    "type": "recording_started",
+                                    "message": "Synthetic board streaming started successfully"
                                 }))
-                                return
-                        # For BLE dongle: try with just dongle port (auto-detect MAC)
-                        elif dongle_port:
-                            print(f"Connecting to Ganglion via BLE dongle (auto-detect MAC): Dongle={dongle_port}")
-                            if mac_address:
-                                print(f"  Using provided MAC: {mac_address}")
-                                self.eeg_service.connect(mac_address=mac_address, dongle_port=dongle_port)
-                            else:
-                                print(f"  Auto-detecting Ganglion MAC address...")
-                                self.eeg_service.connect(dongle_port=dongle_port)
-                        # For BLE dongle with MAC: need both MAC address and dongle port
-                        elif mac_address and dongle_port:
-                            print(f"Connecting to Ganglion via BLE dongle: MAC={mac_address}, Dongle={dongle_port}")
-                            self.eeg_service.connect(mac_address=mac_address, dongle_port=dongle_port)
-                        # For direct Bluetooth: just MAC address
-                        elif mac_address:
-                            print(f"Connecting to Ganglion via Bluetooth: {mac_address}")
-                            self.eeg_service.connect(mac_address=mac_address)
-                        # For USB: serial port
-                        elif serial_port:
-                            print(f"Connecting to Ganglion via USB: {serial_port}")
-                            self.eeg_service.connect(serial_port=serial_port)
+                            except Exception:
+                                pass
+                            
+                            # Broadcast to all clients
+                            try:
+                                await self.broadcast({"type": "recording_started"})
+                            except Exception:
+                                pass
+                            
+                            print("[OK] Started streaming with synthetic board")
+                            return
                         
-                        print("Starting EEG stream...")
-                        self.eeg_service.start_streaming(self.on_eeg_data)
+                        # Real hardware connection logic would go here...
+                        # (keeping it simple for now since we're using synthetic board)
                         
-                        # Give the board a moment to start collecting data
-                        print("[DEBUG] Waiting 2 seconds for board to accumulate initial data...")
-                        await asyncio.sleep(2)
-                        
-                        # Start the stream loop as a background task
-                        self.stream_task = asyncio.create_task(self.eeg_service.stream_loop())
-                        print("EEG recording started successfully!")
-                        print(f"[DEBUG] Stream task created: {self.stream_task}, is_streaming={self.eeg_service.is_streaming}")
-                        print(f"[DEBUG] Board ID: {self.eeg_service.board_id}, Board: {self.eeg_service.board}")
-                        
-                        await websocket.send(json.dumps({
-                            "type": "recording_started",
-                            "message": "Recording started successfully"
-                        }))
-                        await self.broadcast({"type": "recording_started"})
                     except Exception as e:
                         import traceback
-                        error_details = traceback.format_exc()
-                        error_msg = f"Failed to start EEG recording: {str(e)}\n\nMake sure:\n1. Ganglion is powered on\n2. Ganglion is paired (System Settings → Bluetooth)\n3. Connection details are set in .env file\n\nRun 'python -m backend.auto_detect_ganglion' to find your dongle port."
-                        print(f"ERROR: {error_msg}")
-                        print(f"Exception details: {type(e).__name__}: {e}")
-                        print(f"Full traceback:\n{error_details}")
-                        await websocket.send(json.dumps({
-                            "type": "error",
-                            "message": error_msg,
-                            "details": str(e)
-                        }))
+                        error_msg = f"Failed to start: {str(e)}"
+                        print(f"[ERROR] {error_msg}")
+                        print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
+                        try:
+                            await websocket.send(json.dumps({
+                                "type": "error",
+                                "message": error_msg
+                            }))
+                        except Exception:
+                            pass
                 else:
-                    print("EEG already streaming, ignoring start_recording request")
-                    await websocket.send(json.dumps({
-                        "type": "info",
-                        "message": "Recording already in progress"
-                    }))
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": "info",
+                            "message": "Recording already in progress"
+                        }))
+                    except Exception:
+                        pass
             
             elif msg_type == "stop_recording":
                 if self.eeg_service.is_streaming:
                     print("[WS] Stopping recording...")
                     try:
-                        # Stop streaming
                         self.eeg_service.stop_streaming()
-                        print("[WS] Streaming stopped")
                         
                         # Cancel the stream task if it exists
                         if self.stream_task:
-                            print("[WS] Cancelling stream task...")
                             try:
                                 self.stream_task.cancel()
                                 await asyncio.wait_for(self.stream_task, timeout=2.0)
                             except (asyncio.CancelledError, asyncio.TimeoutError):
-                                print("[WS] Stream task cancelled")
-                            except Exception as cancel_error:
-                                print(f"[WARNING] Error cancelling stream task: {cancel_error}")
+                                pass
                             self.stream_task = None
                         
-                        # For synthetic board, keep the board session alive so we can restart
-                        # For real hardware, we might want to disconnect, but for now keep it connected
-                        # Only disconnect if explicitly needed (not for synthetic board)
-                        if self.eeg_service.board_id != BoardIds.SYNTHETIC_BOARD:
-                            # For real hardware, you might want to disconnect to save resources
-                            # But for now, let's keep it connected so it can be restarted easily
-                            print("[WS] Keeping board connection alive (can restart without reconnecting)")
-                        
-                        # Send success message to the client that initiated the stop
+                        # Send success message
                         try:
                             await websocket.send(json.dumps({
                                 "type": "recording_stopped",
                                 "message": "Recording stopped successfully"
                             }))
-                        except Exception as send_error:
-                            print(f"[ERROR] Failed to send recording_stopped message: {send_error}")
+                        except Exception:
+                            pass
                         
                         # Broadcast to all clients
                         try:
                             await self.broadcast({"type": "recording_stopped"})
-                        except Exception as broadcast_error:
-                            print(f"[ERROR] Failed to broadcast recording_stopped: {broadcast_error}")
+                        except Exception:
+                            pass
                         
                         print("[WS] Recording stopped successfully")
                     except Exception as stop_error:
@@ -410,42 +241,50 @@ class WebSocketServer:
                                 "type": "error",
                                 "message": error_msg
                             }))
-                        except Exception as send_error:
-                            print(f"[ERROR] Failed to send error message: {send_error}")
+                        except Exception:
+                            pass
                 else:
-                    print("[WS] Not currently streaming, ignoring stop_recording request")
                     try:
                         await websocket.send(json.dumps({
                             "type": "info",
                             "message": "Not currently recording"
                         }))
-                    except Exception as send_error:
-                        print(f"[ERROR] Failed to send info message: {send_error}")
+                    except Exception:
+                        pass
         
         except json.JSONDecodeError as e:
             error_msg = f"Invalid JSON: {str(e)}"
             print(f"[WS] JSON decode error: {error_msg}")
-            print(f"[WS] Message was: {message[:200]}")
-            await websocket.send(json.dumps({"type": "error", "message": error_msg}))
+            try:
+                await websocket.send(json.dumps({"type": "error", "message": error_msg}))
+            except Exception:
+                pass
         except Exception as e:
             import traceback
             error_msg = f"Error handling message: {str(e)}"
             print(f"[WS] Exception in handle_message: {error_msg}")
             print(f"[WS] Traceback:\n{traceback.format_exc()}")
-            await websocket.send(json.dumps({"type": "error", "message": error_msg}))
+            try:
+                await websocket.send(json.dumps({"type": "error", "message": error_msg}))
+            except Exception:
+                pass
     
-    async def on_eeg_data(self, channel_data: dict):
-        """Callback when new EEG data is available - receives raw channel data"""
-        # Broadcast raw channel data to clients (no database saving - just display)
-        # This runs in the stream_loop task, so we need to be careful with exceptions
+    async def on_eeg_data(self, combined_data: dict):
+        """Callback when new EEG data is available - receives both raw channels and mental state"""
         try:
-            if not channel_data:
+            if not combined_data:
+                return
+            
+            raw_channels = combined_data.get("raw_channels")
+            mental_state = combined_data.get("mental_state")
+            
+            if not raw_channels:
                 return
             
             message = {
                 "type": "eeg_data",
-                "data": channel_data,  # Raw channel values: { channel_1, channel_2, channel_3, channel_4 }
-                "mode": self.current_mode,
+                "raw_channels": raw_channels,
+                "mental_state": mental_state,  # Can be None
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
@@ -454,10 +293,8 @@ class WebSocketServer:
                 try:
                     await self.broadcast(message)
                 except Exception as broadcast_error:
-                    # Don't let broadcast errors crash the stream loop
                     print(f"[ERROR] Failed to broadcast EEG data: {broadcast_error}")
         except Exception as e:
-            # Catch any other errors but don't let them crash the stream
             import traceback
             print(f"[ERROR] Error in on_eeg_data callback: {e}")
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
@@ -469,20 +306,13 @@ class WebSocketServer:
             async for message in websocket:
                 try:
                     await self.handle_message(websocket, message)
+                except websockets.exceptions.ConnectionClosed:
+                    break
                 except Exception as e:
-                    # Handle errors in message processing without closing connection
                     import traceback
-                    print(f"[ERROR] Error processing message from client: {e}")
+                    print(f"[ERROR] Error processing message: {e}")
                     print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
-                    try:
-                        await websocket.send(json.dumps({
-                            "type": "error",
-                            "message": f"Error processing message: {str(e)}"
-                        }))
-                    except Exception as send_error:
-                        print(f"[ERROR] Failed to send error message to client: {send_error}")
-                        # If we can't send, the connection is probably dead, break the loop
-                        break
+                    # Continue processing other messages
         except websockets.exceptions.ConnectionClosed:
             print(f"[CLIENT] Connection closed by client")
         except Exception as e:
@@ -494,13 +324,10 @@ class WebSocketServer:
     
     def process_request(self, protocol, request):
         """Custom request processor to handle Connection header issues"""
-        # In websockets 15.x, request is a Request object
-        # Access headers via request.headers
         connection = request.headers.get("Connection", "")
         if connection and "upgrade" not in connection.lower():
-            # Replace Connection header to include Upgrade
             request.headers["Connection"] = "Upgrade"
-        return None  # Continue with normal processing
+        return None
     
     async def start(self):
         """Start the WebSocket server"""
@@ -516,4 +343,3 @@ class WebSocketServer:
 if __name__ == "__main__":
     server = WebSocketServer()
     asyncio.run(server.start())
-
