@@ -26,7 +26,7 @@ NeuroCalm is a web application that uses EEG data from OpenBCI to measure brain 
 
 - Python 3.8+
 - Node.js 16+ and npm
-- OpenBCI hardware (or use synthetic board for testing)
+- OpenBCI Ganglion board and BLE dongle
 
 ### Backend Setup
 
@@ -74,7 +74,7 @@ NeuroCalm is a web application that uses EEG data from OpenBCI to measure brain 
 
 ### OpenBCI Configuration
 
-By default, the system uses a synthetic board for testing. To use real OpenBCI hardware:
+#### Using Real OpenBCI Hardware
 
 1. **For Cyton Board:**
    ```python
@@ -88,10 +88,22 @@ By default, the system uses a synthetic board for testing. To use real OpenBCI h
    board_id = BoardIds.GANGLION_BOARD
    ```
 
-3. **Set serial port:**
-   ```python
-   eeg_service.connect(serial_port="/dev/ttyUSB0")  # Adjust for your system
+3. **Auto-detect Ganglion with BLE dongle:**
+   ```bash
+   python -m backend.auto_detect_ganglion
    ```
+   This will scan for BLE dongles and try to connect to your Ganglion board.
+
+4. **Manual configuration:**
+   - Set serial port in `.env`:
+     ```bash
+     GANGLION_DONGLE_PORT=/dev/tty.usbserial-XXXXX  # macOS/Linux
+     GANGLION_DONGLE_PORT=COM3  # Windows
+     ```
+   - Optionally set MAC address:
+     ```bash
+     GANGLION_MAC_ADDRESS=00:A0:C9:14:C8:29
+     ```
 
 ## Usage
 

@@ -136,3 +136,215 @@
   }
 }
 
+/* Breathing Exercise Popup */
+.breathing-exercise-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.breathing-exercise-popup {
+  background: white;
+  border-radius: 16px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  position: relative;
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.breathing-exercise-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  font-size: 2rem;
+  color: #666;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.breathing-exercise-close:hover {
+  background: #f5f5f5;
+  color: #333;
+}
+
+.breathing-exercise-content {
+  text-align: center;
+  padding: 1rem;
+}
+
+.breathing-exercise-content h3 {
+  margin: 0 0 1.5rem 0;
+  color: #333;
+  font-size: 1.5rem;
+}
+
+.breathing-instruction {
+  font-size: 1.2rem;
+  color: #667eea;
+  font-weight: 600;
+  margin: 1rem 0;
+  min-height: 2rem;
+}
+
+.breathing-circle {
+  width: 200px;
+  height: 200px;
+  margin: 2rem auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 4s ease-in-out, background-color 0.5s ease-in-out;
+  position: relative;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.breathing-circle-inner {
+  width: 80%;
+  height: 80%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.3s ease-in-out;
+}
+
+.breathing-circle.inhale {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  transform: scale(1.2);
+  transition: transform 4s ease-in-out, background-color 0.5s ease-in-out;
+}
+
+.breathing-circle.hold {
+  background: linear-gradient(135deg, #764ba2 0%, #9b59b6 100%);
+  transform: scale(1.2);
+  transition: transform 0.1s ease-in-out, background-color 0.5s ease-in-out;
+}
+
+.breathing-circle.exhale {
+  background: linear-gradient(135deg, #9b59b6 0%, #667eea 100%);
+  transform: scale(1);
+  transition: transform 4s ease-in-out, background-color 0.5s ease-in-out;
+}
+
+.breathing-circle.pause {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  transform: scale(1);
+  transition: transform 0.1s ease-in-out, background-color 0.5s ease-in-out;
+}
+
+.breathing-cycle-info {
+  font-size: 1rem;
+  color: #666;
+  margin: 1rem 0;
+}
+
+.breathing-tip {
+  font-size: 0.9rem;
+  color: #999;
+  margin-top: 1.5rem;
+  font-style: italic;
+}
+
+/* Encouraging Message Toast */
+.encouraging-message-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 2000;
+  animation: slideInRight 0.5s ease-out, fadeOut 0.5s ease-in 4.5s;
+  max-width: 400px;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.encouraging-message-content {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 1.25rem 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+  }
+  50% {
+    box-shadow: 0 4px 30px rgba(102, 126, 234, 0.6);
+  }
+}
+
+.encouraging-message-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
+.encouraging-message-content p {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
